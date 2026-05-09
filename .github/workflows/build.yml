@@ -1,0 +1,84 @@
+name: Build & Screenshot
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app || sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: List available simulators
+        run: xcrun simctl list devices available | head -40
+
+      - name: Build for Simulator
+        run: |
+          xcodebuild build \
+            -project ShortsScroller.xcodeproj \
+            -scheme ShortsScroller \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tail -20
+
+      - name: Boot Simulator & Install App
+        run: |
+          # Find the built .app
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "ShortsScroller.app" -path "*/Debug-iphonesimulator/*" | head -1)
+          echo "App path: $APP_PATH"
+          
+          # Boot iPhone 16 simulator
+          DEVICE_ID=$(xcrun simctl list devices available | grep "iPhone 16" | grep -v Pro | grep -v Plus | head -1 | grep -oE '[A-F0-9-]{36}')
+          echo "Device ID: $DEVICE_ID"
+          
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          sleep 5
+          
+          # Install and launch
+          xcrun simctl install "$DEVICE_ID" "$APP_PATH"
+          xcrun simctl launch "$DEVICE_ID" com.nishant.ShortsScroller
+          
+          # Wait for app to load
+          sleep 8
+          
+          # Take screenshot
+          mkdir -p screenshots
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/01-app-launched.png
+          
+          # Wait more for YouTube to load
+          sleep 10
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/02-shorts-loaded.png
+          
+          # Wait a bit more
+          sleep 5
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/03-ready.png
+
+      - name: Upload Screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-screenshots
+          path: screenshots/
+          retention-days: 30
+
+      - name: Add screenshots to summary
+        run: |
+          echo "## 📱 ShortsScroller Screenshots" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for f in screenshots/*.png; do
+            name=$(basename "$f" .png)
+            echo "### $name" >> $GITHUB_STEP_SUMMARY
+            # Base64 encode and inline
+            echo "![${name}](data:image/png;base64,$(base64 -i "$f"))" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "(screenshot captured - download from artifacts)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
